@@ -1,0 +1,355 @@
+const $ = s => document.querySelector(s);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({
+  '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'
+}[c]));
+const LOGF = ['saved_at','today','animal','start_date',
+  'weight_g','medication','dose_mg_per_kg',
+  'concentration','dosage_ml'];
+const DEFAULT_MEDS = {
+  Meloxicam:0.2, Enrofloxacin:10, Doxycillin:5
+};
+const TITLES = {
+  calc:'Dosage Calculator', history:'History', meds:'Medications'
+};
+let meds = {}, 
+  log = [], 
+  dosage = null, 
+  editing = null;
+
+const load = (k, d) => { 
+  try { 
+    return JSON.parse(localStorage.getItem(k)) ?? d 
+  } catch { 
+    return d 
+  } 
+};
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+const localISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString();
+const today = () => localISO().slice(0, 10);
+
+let tt;
+
+function toast(t) { 
+  const e = $('#toast'); 
+  e.textContent = t; 
+  e.classList.add('on'); 
+  clearTimeout(tt); 
+  tt = setTimeout(() => e.classList.remove('on'), 2500); 
+}
+
+/* ---------- CSV ---------- */
+const q = v => /[",\n]/.test(v) ? '"' + String(v).replace(/"/g, '""') + '"' : String(v);
+const toCSV = (rows, f) => 
+  [f.join(','), ...rows.map(
+    r => f.map(k => q(r[k] ?? '')).join(',')
+  )].join('\n') + '\n';
+
+function parseCSV(t) {
+  const rows = [];
+  let r = [];
+  let c = '';
+  let inq = false;
+
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+
+    if (inq) {
+      if (ch === '"') {
+        if (t[i + 1] === '"') {
+          c += '"';
+          i++;
+        } else {
+          inq = false;
+        }
+      } else {
+        c += ch;
+      }
+    } else if (ch === '"') {
+      inq = true;
+    } else if (ch === ',') {
+      r.push(c);
+      c = '';
+    } else if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && t[i + 1] === '\n') {
+        i++;
+      }
+      r.push(c);
+      c = '';
+      rows.push(r);
+      r = [];
+    } else {
+      c += ch;
+    }
+  }
+
+  if (c || r.length) {
+    r.push(c);
+    rows.push(r);
+  }
+
+  return rows;
+}
+
+
+function importMeds(text) {
+  let n = 0;
+  for (const [a, b] of parseCSV(text)) {
+    const d = parseFloat(b), name = (a || '').trim();
+    if (name && d > 0) { 
+      meds[name] = d; 
+      n++; 
+    }   // header line is skipped (NaN)
+  }
+  if (n) { 
+    save('meds', meds); 
+    renderMeds(); 
+    fillSelect(); 
+    calc(); 
+  }
+
+  return n;
+}
+
+async function out(text, name, share) {
+  const file = new File([text], name, { type: 'text/csv' });
+
+  if (
+    share &&
+    navigator.canShare &&
+    navigator.canShare({ files: [file] })
+  ) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') {
+        return;
+      }
+    }
+  }
+
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(file);
+  a.download = name;
+  a.click();
+
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  toast('Saved ' + name);
+}
+
+
+const stamp = n => 
+  `${n}_${localISO().slice(0, 16).replace(
+    /[-:T]/g, '').replace(/^(\d{8})/, '$1_')}.csv`;
+
+/* ---------- Calculator (same formula as before) ---------- */
+function fillSelect() {
+  const sel = $('#med'), cur = sel.value;
+  sel.innerHTML = '<option value="">Select medication</option>' +
+    Object.keys(meds).sort((a, b) => a.localeCompare(b)).map(n =>
+      `<option value="${esc(n)}">${esc(n)} (${meds[n]} mg/kg)</option>`).join('');
+  sel.value = meds[cur] ? cur : '';
+}
+
+function calc() {
+  const w = parseFloat($('#weight').value), 
+    c = parseFloat($('#conc').value), 
+    rule = meds[$('#med').value];
+  dosage = null;
+  if (rule && w > 0 && c > 0) {
+    const v = (w / 1000) * rule / c;          // g -> kg, mg dose, then mL
+    if (isFinite(v) && v > 0) 
+      dosage = v;
+  }
+  $('#result').textContent = dosage == null ? '--' : dosage.toFixed(3) + ' mL';
+  $('#submit').disabled = dosage == null;
+}
+
+function submit() {
+  const animal = $('#animal').value.trim(), m = $('#med').value;
+  if (!animal) 
+    return toast('Enter an animal name first');
+  if (dosage == null) 
+    return;
+  const row = { 
+    saved_at: localISO().slice(0, 19).replace('T', ' '), 
+    today: today(), animal,
+    start_date: $('#start').value || today(), 
+    weight_g: $('#weight').value, 
+    medication: m,
+    dose_mg_per_kg: meds[m], 
+    concentration: $('#conc').value, 
+    dosage_ml: dosage.toFixed(3) 
+  };
+  const last = log[log.length - 1];
+  if (last && LOGF.every(k => k === 'saved_at' || String(last[k]) === String(row[k]))) 
+    return toast('Already submitted');
+  log.push(row); save('log', log);
+  $('#status').textContent = `Submitted ${row.saved_at.slice(11)} (${log.length} records)`;
+  toast('Submitted');
+}
+
+/* ---------- History ---------- */
+function renderHistory() {
+  $('#hEmpty').textContent = log.length ? '' : 'No saved entries yet.';
+  $('#hList').innerHTML = log.map((r, i) => [r, i]).reverse().map(([r, i]) => `
+    <div class="item"><b>${esc(r.animal)} - ${esc(r.dosage_ml)} mL</b>
+      <small>${esc(r.medication)} (${esc(r.dose_mg_per_kg)} mg/kg) @ ${esc(r.concentration)} mg/mL</small>
+      <small>Start ${esc(r.start_date)} | ${esc(r.weight_g)} g | ${esc(r.saved_at.slice(0, 16))}</small>
+      <div class="row"><button class="b" data-load="${i}">Load</button><button class="b" data-del="${i}">Delete</button></div></div>`).join('');
+}
+
+function loadEntry(i) {
+  const r = log[i];
+  $('#animal').value = r.animal; 
+  $('#start').value = r.start_date;
+  $('#weight').value = r.weight_g; 
+  $('#conc').value = r.concentration;
+  $('#med').value = meds[r.medication] ? r.medication : '';
+  calc(); go('calc');
+}
+
+/* ---------- Medications ---------- */
+function renderMeds() {
+  $('#mList').innerHTML = Object.keys(meds).sort((a, b) => a.localeCompare(b)).map(n => `
+    <div class="item"><b>${esc(n)}</b><small>${meds[n]} mg/kg</small>
+      <div class="row"><button class="b" data-edit="${esc(n)}">Edit</button><button class="b" data-rm="${esc(n)}">Delete</button></div></div>`).join('');
+}
+
+function saveMed() {
+  const name = $('#mName').value.trim(), 
+    dose = parseFloat($('#mDose').value);
+  if (!name || !(dose > 0)) 
+    return toast('Enter a name and a dose greater than 0');
+  if (editing && editing !== name) 
+    delete meds[editing];
+
+  meds[name] = dose; 
+  editing = null;
+  $('#mName').value = ''; 
+  $('#mDose').value = '';
+  save('meds', meds); 
+  renderMeds(); 
+  fillSelect(); 
+  calc(); 
+  toast('Saved');
+}
+
+/* ---------- Navigation & wiring ---------- */
+function go(v) {
+  for (const id of Object.keys(TITLES)) 
+    $('#' + id).hidden = id !== v;
+
+  $('#title').textContent = TITLES[v]; 
+  $('#back').hidden = v === 'calc';
+  document.querySelectorAll('[data-go]').forEach(
+    b => b.hidden = v !== 'calc');
+
+  if (v === 'history') 
+    renderHistory();
+
+  if (v === 'meds') 
+    renderMeds();
+  scrollTo(0, 0);
+}
+
+document.addEventListener('click', e => {
+  const t = e.target.closest('button'); 
+  if (!t) 
+    return;
+  if (t.dataset.go) 
+    go(t.dataset.go);
+  else if (t.dataset.load) 
+    loadEntry(+t.dataset.load);
+  else if (t.dataset.del && confirm('Delete this entry?')) { 
+      log.splice(+t.dataset.del, 1); 
+      save('log', log); 
+      renderHistory(); 
+  } else if (t.dataset.edit) { 
+    editing = t.dataset.edit; 
+    $('#mName').value = editing; 
+    $('#mDose').value = meds[editing]; 
+    $('#mName').focus(); 
+    scrollTo(0, 0); 
+  } else if (t.dataset.rm && confirm('Delete ' + t.dataset.rm + '?')) { 
+    delete meds[t.dataset.rm]; 
+    save('meds', meds); 
+    renderMeds(); 
+    fillSelect(); 
+    calc(); 
+  }
+});
+$('#back').onclick = () => go('calc');
+$('#submit').onclick = submit;
+['animal', 'start', 'weight', 'conc', 'med'].forEach(
+  id => $('#' + id).addEventListener('input', calc));
+$('#mSave').onclick = saveMed;
+$('#mImport').onclick = () => $('#mFile').click();
+$('#mFile').onchange = async e => {
+  const f = e.target.files[0]; 
+  if (!f) 
+    return;
+
+  const n = importMeds(await f.text()); 
+  e.target.value = '';
+  toast(n ? `Imported ${n} medication(s)` : 'No "name,dose" lines found');
+};
+
+const medsCSV = () => toCSV(Object.keys(meds).sort().map(
+  n => ({ 
+    medication: n, 
+    dose_mg_per_kg: meds[n] 
+  })), ['medication', 'dose_mg_per_kg']
+);
+
+$('#mShare').onclick = () => out(
+  medsCSV(), 'medications.csv', true);
+$('#mDl').onclick = () => out(
+  medsCSV(), 'medications.csv', false);
+const logOut = share => log.length ? out(
+  toCSV(log, LOGF), stamp('dosage_log'), share) : toast('Nothing to export yet');
+$('#hShare').onclick = () => logOut(true);
+$('#hDl').onclick = () => logOut(false);
+
+(async function init() {
+  log = load('log', []);
+  const savedMeds = load('meds', null);
+
+  if (savedMeds !== null) {
+    meds = savedMeds;
+  } else {
+    meds = {};
+
+    try {
+      const response = await fetch('./medications.csv');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const count = importMeds(await response.text());
+      if (!count) {
+        throw new Error('No valid medication rows found');
+      }
+    } catch (e) {
+      console.error('Could not load medications.csv:', e);
+      meds = { ...DEFAULT_MEDS };
+      toast(`Could not load medications.csv: ${e.message}`);
+    }
+
+    if (!Object.keys(meds).length) {
+      meds = { ...DEFAULT_MEDS };
+    }
+    save('meds', meds);
+  }
+
+  $('#today').textContent = 'Today: ' + today();
+  $('#start').value = today();
+  fillSelect();
+  calc();
+  go('calc');
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js');
+  }
+})();
+

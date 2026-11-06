@@ -1,0 +1,16 @@
+medication, dose_mg_per_kg
+"Amoxicillin 10 mg/kg", 10
+"Amoxicillin 15 mg/kg", 15
+"Amoxicillin 20 mg/kg", 20
+"Amoxicillin 25 mg/kg", 25
+"Baytril (enrofloxacin) 5mg/kg", 5
+"Baytril (enrofloxacin) 10mg/kg", 10
+"Clavamox 20mg/kg", 20
+"Clavamox 30mg/kg", 30
+"Doxycycline 5 mg/kg", 5
+"Meloxicam 0.2mg/kg 1x/daily", 0.2
+"Meloxicam 0.2mg/kg 2x/daily", 0.1
+"Meloxicam 0.5mg/kg 1x/daily", 0.5
+"Meloxicam 0.5mg/kg 2x/daily", 0.25
+"Meloxicam 1mg/kg 1x/daily", 1
+"Meloxicam 2mg/kg 1x/daily", 2
